@@ -6,6 +6,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import az.dahcraf.proportions.data.IngredientLineInput
 import az.dahcraf.proportions.data.RecipeRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,6 +39,9 @@ data class RecipeCardUiState(
     val mode: CardMode = CardMode.CALCULATE,
     /** Set right after [RecipeCardViewModel.addLine] so the screen can scroll the new row into view. */
     val scrollToLineKey: Long? = null,
+    /** Ingredient row whose name field is focused - only that row's dropdown is shown (docs/TZ.md p.3.3). */
+    val activeSuggestionKey: Long? = null,
+    val suggestions: List<String> = emptyList(),
 )
 
 class RecipeCardViewModel(
@@ -83,8 +87,41 @@ class RecipeCardViewModel(
         _uiState.update { it.copy(recipeName = name) }
     }
 
+    private var suggestionsJob: Job? = null
+
     fun onIngredientNameChange(key: Long, name: String) {
         _uiState.update { state -> state.copy(lines = state.lines.map { if (it.key == key) it.copy(name = name) else it }) }
+        refreshSuggestions(key, name)
+    }
+
+    fun onIngredientNameFocusChanged(key: Long, focused: Boolean) {
+        if (focused) {
+            _uiState.update { it.copy(activeSuggestionKey = key) }
+            val current = _uiState.value.lines.find { it.key == key }?.name.orEmpty()
+            refreshSuggestions(key, current)
+        } else {
+            _uiState.update { state ->
+                if (state.activeSuggestionKey == key) state.copy(activeSuggestionKey = null, suggestions = emptyList()) else state
+            }
+        }
+    }
+
+    fun onSuggestionSelected(key: Long, name: String) {
+        suggestionsJob?.cancel()
+        _uiState.update { state ->
+            state.copy(
+                lines = state.lines.map { if (it.key == key) it.copy(name = name) else it },
+                suggestions = emptyList(),
+            )
+        }
+    }
+
+    private fun refreshSuggestions(key: Long, prefix: String) {
+        suggestionsJob?.cancel()
+        suggestionsJob = viewModelScope.launch {
+            val results = repository.suggestIngredientNames(prefix)
+            _uiState.update { if (it.activeSuggestionKey == key) it.copy(suggestions = results) else it }
+        }
     }
 
     fun setMode(mode: CardMode) {
@@ -138,7 +175,13 @@ class RecipeCardViewModel(
     }
 
     fun removeLine(key: Long) {
-        _uiState.update { state -> state.copy(lines = state.lines.filterNot { it.key == key }) }
+        _uiState.update { state ->
+            state.copy(
+                lines = state.lines.filterNot { it.key == key },
+                activeSuggestionKey = state.activeSuggestionKey.takeUnless { it == key },
+                suggestions = if (state.activeSuggestionKey == key) emptyList() else state.suggestions,
+            )
+        }
     }
 
     fun save(onSaved: (Long) -> Unit) {

@@ -15,10 +15,13 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -37,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
@@ -108,7 +112,10 @@ fun RecipeCardScreen(
                         line = line,
                         canRemove = uiState.lines.size > 1,
                         nameFocusRequester = nameFocusRequester,
+                        suggestions = if (uiState.activeSuggestionKey == line.key) uiState.suggestions else emptyList(),
                         onNameChange = { viewModel.onIngredientNameChange(line.key, it) },
+                        onNameFocusChanged = { viewModel.onIngredientNameFocusChanged(line.key, it) },
+                        onSuggestionSelected = { viewModel.onSuggestionSelected(line.key, it) },
                         onAmountChange = { viewModel.onAmountChange(line.key, it) },
                         onRemove = { viewModel.removeLine(line.key) },
                     )
@@ -188,12 +195,16 @@ private fun DirtyBanner() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun IngredientRow(
     line: CardLineState,
     canRemove: Boolean,
     nameFocusRequester: FocusRequester,
+    suggestions: List<String>,
     onNameChange: (String) -> Unit,
+    onNameFocusChanged: (Boolean) -> Unit,
+    onSuggestionSelected: (String) -> Unit,
     onAmountChange: (String) -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -202,15 +213,36 @@ private fun IngredientRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        OutlinedTextField(
-            value = line.name,
-            onValueChange = onNameChange,
-            label = { Text("Ingredient") },
-            singleLine = true,
-            modifier = Modifier
-                .weight(2f)
-                .focusRequester(nameFocusRequester),
-        )
+        // The ViewModel's suggestion list is the single source of truth for whether the dropdown
+        // is open - deriving it directly (instead of a remembered boolean) means retyping the
+        // same prefix after a dismissal still reopens it.
+        val expanded = suggestions.isNotEmpty()
+
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = {},
+            modifier = Modifier.weight(2f),
+        ) {
+            OutlinedTextField(
+                value = line.name,
+                onValueChange = onNameChange,
+                label = { Text("Ingredient") },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryEditable, true)
+                    .focusRequester(nameFocusRequester)
+                    .onFocusChanged { onNameFocusChanged(it.isFocused) },
+            )
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = {}) {
+                suggestions.forEach { suggestion ->
+                    DropdownMenuItem(
+                        text = { Text(suggestion) },
+                        onClick = { onSuggestionSelected(suggestion) },
+                    )
+                }
+            }
+        }
         OutlinedTextField(
             value = line.amountText,
             onValueChange = onAmountChange,
