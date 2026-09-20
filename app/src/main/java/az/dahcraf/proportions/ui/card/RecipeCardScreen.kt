@@ -28,11 +28,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
@@ -47,13 +51,14 @@ fun RecipeCardScreen(
         uiState.lines.any { it.name.isNotBlank() && parseAmount(it.amountText) != null }
 
     val listState = rememberLazyListState()
+    val nameFocusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
     LaunchedEffect(uiState.scrollToLineKey) {
-        if (uiState.scrollToLineKey != null) {
-            // The new row is always appended last, right before the "+ Add ingredient" item -
-            // scrolling to that trailing item brings both into view in one motion.
-            listState.animateScrollToItem(uiState.lines.size)
-            viewModel.onScrolledToLine()
-        }
+        val key = uiState.scrollToLineKey ?: return@LaunchedEffect
+        // The new row is always appended last, right before the "+ Add ingredient" item -
+        // scrolling to that trailing item brings both into view in one motion.
+        listState.animateScrollToItem(uiState.lines.size)
+        nameFocusRequesters[key]?.requestFocus()
+        viewModel.onScrolledToLine()
     }
 
     Scaffold(
@@ -94,9 +99,15 @@ fun RecipeCardScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(uiState.lines, key = { it.key }) { line ->
+                    val nameFocusRequester = remember(line.key) { FocusRequester() }
+                    DisposableEffect(line.key) {
+                        nameFocusRequesters[line.key] = nameFocusRequester
+                        onDispose { nameFocusRequesters.remove(line.key) }
+                    }
                     IngredientRow(
                         line = line,
                         canRemove = uiState.lines.size > 1,
+                        nameFocusRequester = nameFocusRequester,
                         onNameChange = { viewModel.onIngredientNameChange(line.key, it) },
                         onAmountChange = { viewModel.onAmountChange(line.key, it) },
                         onRemove = { viewModel.removeLine(line.key) },
@@ -181,6 +192,7 @@ private fun DirtyBanner() {
 private fun IngredientRow(
     line: CardLineState,
     canRemove: Boolean,
+    nameFocusRequester: FocusRequester,
     onNameChange: (String) -> Unit,
     onAmountChange: (String) -> Unit,
     onRemove: () -> Unit,
@@ -195,7 +207,9 @@ private fun IngredientRow(
             onValueChange = onNameChange,
             label = { Text("Ingredient") },
             singleLine = true,
-            modifier = Modifier.weight(2f),
+            modifier = Modifier
+                .weight(2f)
+                .focusRequester(nameFocusRequester),
         )
         OutlinedTextField(
             value = line.amountText,
