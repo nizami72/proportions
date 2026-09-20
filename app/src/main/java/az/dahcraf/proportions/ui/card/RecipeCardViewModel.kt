@@ -20,12 +20,24 @@ data class CardLineState(
     val amountText: String = "",
 )
 
+/** Two ways of editing amounts on an already-saved card (docs/TZ.md p.3.6). */
+enum class CardMode {
+    /** Editing a field rescales every other field from its baseline by the same coefficient. */
+    CALCULATE,
+
+    /** Editing a field only changes that field - for fixing a typo or reshaping the recipe. */
+    EDIT_RATIOS,
+}
+
 data class RecipeCardUiState(
     val isLoading: Boolean = true,
     val isNewRecipe: Boolean = true,
     val recipeName: String = "",
     val lines: List<CardLineState> = emptyList(),
     val isDirtyFromBaseline: Boolean = false,
+    val mode: CardMode = CardMode.CALCULATE,
+    /** Set right after [RecipeCardViewModel.addLine] so the screen can scroll the new row into view. */
+    val scrollToLineKey: Long? = null,
 )
 
 class RecipeCardViewModel(
@@ -75,13 +87,29 @@ class RecipeCardViewModel(
         _uiState.update { state -> state.copy(lines = state.lines.map { if (it.key == key) it.copy(name = name) else it }) }
     }
 
+    fun setMode(mode: CardMode) {
+        _uiState.update { state ->
+            state.copy(
+                mode = mode,
+                // Edit-ratios mode never shows the "recalculated, not saved" banner (p.3.6) -
+                // switching back to Calculate mode re-derives it from the current values.
+                isDirtyFromBaseline = if (mode == CardMode.EDIT_RATIOS) false else isDirty(state.lines),
+            )
+        }
+    }
+
     /**
-     * Core recalculation (docs/TZ.md p.3.2): the edited field defines the new coefficient
-     * against its own saved baseline, every other field is scaled from *its* baseline by that
-     * coefficient. Baselines themselves are only touched by [save].
+     * Calculate mode (docs/TZ.md p.3.2): the edited field defines the new coefficient against
+     * its own saved baseline, every other field is scaled from *its* baseline by that
+     * coefficient. Edit-ratios mode (p.3.6) only ever touches the edited field itself. Baselines
+     * themselves are only touched by [save].
      */
     fun onAmountChange(key: Long, rawText: String) {
         _uiState.update { state ->
+            if (state.mode == CardMode.EDIT_RATIOS) {
+                val newLines = state.lines.map { if (it.key == key) it.copy(amountText = rawText) else it }
+                return@update state.copy(lines = newLines, isDirtyFromBaseline = false)
+            }
             val edited = state.lines.find { it.key == key } ?: return@update state
             val parsed = parseAmount(rawText)
             val newLines = if (parsed == null || edited.baselineAmount == 0.0) {
@@ -101,7 +129,12 @@ class RecipeCardViewModel(
     }
 
     fun addLine() {
-        _uiState.update { it.copy(lines = it.lines + CardLineState(key = newKey())) }
+        val newLine = CardLineState(key = newKey())
+        _uiState.update { it.copy(lines = it.lines + newLine, scrollToLineKey = newLine.key) }
+    }
+
+    fun onScrolledToLine() {
+        _uiState.update { it.copy(scrollToLineKey = null) }
     }
 
     fun removeLine(key: Long) {
@@ -130,6 +163,7 @@ class RecipeCardViewModel(
                     isNewRecipe = false,
                     recipeName = trimmedName,
                     isDirtyFromBaseline = false,
+                    mode = CardMode.CALCULATE,
                     lines = parsedLines.map { (key, name, amount) ->
                         CardLineState(key = key, name = name, baselineAmount = amount, amountText = formatAmount(amount))
                     },
