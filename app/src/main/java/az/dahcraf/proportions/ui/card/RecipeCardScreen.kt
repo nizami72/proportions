@@ -1,5 +1,8 @@
 package az.dahcraf.proportions.ui.card
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -31,20 +34,25 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun RecipeCardScreen(
     viewModel: RecipeCardViewModel,
@@ -96,33 +104,38 @@ fun RecipeCardScreen(
                 DirtyBanner()
             }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                items(uiState.lines, key = { it.key }) { line ->
-                    val nameFocusRequester = remember(line.key) { FocusRequester() }
-                    DisposableEffect(line.key) {
-                        nameFocusRequesters[line.key] = nameFocusRequester
-                        onDispose { nameFocusRequesters.remove(line.key) }
+            // Overrides Compose's default "scroll minimally to reveal the focused field" behavior
+            // so the row being edited lands centered in the visible area above the keyboard,
+            // instead of hugging whichever edge it happened to scroll in from.
+            CompositionLocalProvider(LocalBringIntoViewSpec provides CenteredBringIntoViewSpec) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(uiState.lines, key = { it.key }) { line ->
+                        val nameFocusRequester = remember(line.key) { FocusRequester() }
+                        DisposableEffect(line.key) {
+                            nameFocusRequesters[line.key] = nameFocusRequester
+                            onDispose { nameFocusRequesters.remove(line.key) }
+                        }
+                        IngredientRow(
+                            line = line,
+                            canRemove = uiState.lines.size > 1,
+                            nameFocusRequester = nameFocusRequester,
+                            suggestions = if (uiState.activeSuggestionKey == line.key) uiState.suggestions else emptyList(),
+                            onNameChange = { viewModel.onIngredientNameChange(line.key, it) },
+                            onNameFocusChanged = { viewModel.onIngredientNameFocusChanged(line.key, it) },
+                            onSuggestionSelected = { viewModel.onSuggestionSelected(line.key, it) },
+                            onAmountChange = { viewModel.onAmountChange(line.key, it) },
+                            onRemove = { viewModel.removeLine(line.key) },
+                        )
                     }
-                    IngredientRow(
-                        line = line,
-                        canRemove = uiState.lines.size > 1,
-                        nameFocusRequester = nameFocusRequester,
-                        suggestions = if (uiState.activeSuggestionKey == line.key) uiState.suggestions else emptyList(),
-                        onNameChange = { viewModel.onIngredientNameChange(line.key, it) },
-                        onNameFocusChanged = { viewModel.onIngredientNameFocusChanged(line.key, it) },
-                        onSuggestionSelected = { viewModel.onSuggestionSelected(line.key, it) },
-                        onAmountChange = { viewModel.onAmountChange(line.key, it) },
-                        onRemove = { viewModel.removeLine(line.key) },
-                    )
-                }
-                item {
-                    TextButton(onClick = viewModel::addLine) {
-                        Text("+ Add ingredient")
+                    item {
+                        TextButton(onClick = viewModel::addLine) {
+                            Text("+ Add ingredient")
+                        }
                     }
                 }
             }
@@ -135,7 +148,7 @@ fun RecipeCardScreen(
                     .padding(16.dp),
             ) {
                 Text(
-                    if (uiState.isDirtyFromBaseline) {
+                    if (!uiState.isNewRecipe && uiState.isDirtyFromBaseline) {
                         "Save with these new values"
                     } else {
                         "Save"
@@ -143,6 +156,14 @@ fun RecipeCardScreen(
                 )
             }
         }
+    }
+}
+
+/** Centers the requested rectangle in the container instead of just scrolling it minimally into view. */
+@OptIn(ExperimentalFoundationApi::class)
+private val CenteredBringIntoViewSpec = object : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+        return offset - (containerSize - size) / 2f
     }
 }
 
@@ -218,14 +239,21 @@ private fun IngredientRow(
         // same prefix after a dismissal still reopens it.
         val expanded = suggestions.isNotEmpty()
 
+        // Local TextFieldValue so picking a suggestion can explicitly place the caret at the end -
+        // line.name itself is never changed except by typing here or picking a suggestion here, so
+        // there's no external value to reconcile with (unlike the Amount field below).
+        var nameValue by remember(line.key) {
+            mutableStateOf(TextFieldValue(text = line.name, selection = TextRange(line.name.length)))
+        }
+
         ExposedDropdownMenuBox(
             expanded = expanded,
             onExpandedChange = {},
             modifier = Modifier.weight(2f),
         ) {
             OutlinedTextField(
-                value = line.name,
-                onValueChange = onNameChange,
+                value = nameValue,
+                onValueChange = { nameValue = it; onNameChange(it.text) },
                 label = { Text("Ingredient") },
                 singleLine = true,
                 modifier = Modifier
@@ -238,18 +266,39 @@ private fun IngredientRow(
                 suggestions.forEach { suggestion ->
                     DropdownMenuItem(
                         text = { Text(suggestion) },
-                        onClick = { onSuggestionSelected(suggestion) },
+                        onClick = {
+                            nameValue = TextFieldValue(text = suggestion, selection = TextRange(suggestion.length))
+                            onSuggestionSelected(suggestion)
+                        },
                     )
                 }
             }
         }
+
+        // Local TextFieldValue for two reasons: selecting all on focus (so the first digit typed
+        // replaces the old amount, docs/TZ.md editing UX) and, unlike the name field, the text
+        // *can* change from outside while unfocused - Calculate mode recalculates sibling rows.
+        var amountValue by remember(line.key) {
+            mutableStateOf(TextFieldValue(text = line.amountText, selection = TextRange(line.amountText.length)))
+        }
+        LaunchedEffect(line.amountText) {
+            if (amountValue.text != line.amountText) {
+                amountValue = TextFieldValue(text = line.amountText, selection = TextRange(line.amountText.length))
+            }
+        }
         OutlinedTextField(
-            value = line.amountText,
-            onValueChange = onAmountChange,
+            value = amountValue,
+            onValueChange = { amountValue = it; onAmountChange(it.text) },
             label = { Text("Amount") },
             singleLine = true,
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .onFocusChanged {
+                    if (it.isFocused) {
+                        amountValue = amountValue.copy(selection = TextRange(0, amountValue.text.length))
+                    }
+                },
         )
         IconButton(onClick = onRemove, enabled = canRemove) {
             Icon(Icons.Filled.Delete, contentDescription = "Remove ingredient")
