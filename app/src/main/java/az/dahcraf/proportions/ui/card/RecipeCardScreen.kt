@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -71,6 +72,27 @@ fun RecipeCardScreen(
         listState.animateScrollToItem(uiState.lines.size)
         nameFocusRequesters[key]?.requestFocus()
         viewModel.onScrolledToLine()
+    }
+
+    // Compose's default "scroll minimally to reveal the focused field" fires right as focus
+    // changes, before the IME has finished animating in - for a long list that leaves the
+    // freshly-focused row positioned against the *pre-keyboard* viewport height, so it can end
+    // up hidden once the keyboard finishes sliding up. Track focus ourselves instead and keep
+    // the row fully visible as the viewport's real (post-keyboard) height keeps changing.
+    var focusedLineKey by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(focusedLineKey) {
+        val key = focusedLineKey ?: return@LaunchedEffect
+        val index = uiState.lines.indexOfFirst { it.key == key }
+        if (index < 0) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.viewportSize.height }.collect { viewportHeight ->
+            val itemInfo = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+            val fullyVisible = itemInfo != null &&
+                itemInfo.offset >= 0 &&
+                itemInfo.offset + itemInfo.size <= viewportHeight
+            if (!fullyVisible) {
+                listState.scrollToItem(index)
+            }
+        }
     }
 
     Scaffold(
@@ -104,10 +126,7 @@ fun RecipeCardScreen(
                 DirtyBanner()
             }
 
-            // Overrides Compose's default "scroll minimally to reveal the focused field" behavior
-            // so the row being edited lands centered in the visible area above the keyboard,
-            // instead of hugging whichever edge it happened to scroll in from.
-            CompositionLocalProvider(LocalBringIntoViewSpec provides CenteredBringIntoViewSpec) {
+            CompositionLocalProvider(LocalBringIntoViewSpec provides NoAutoScrollBringIntoViewSpec) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.weight(1f),
@@ -130,6 +149,7 @@ fun RecipeCardScreen(
                             onSuggestionSelected = { viewModel.onSuggestionSelected(line.key, it) },
                             onAmountChange = { viewModel.onAmountChange(line.key, it) },
                             onRemove = { viewModel.removeLine(line.key) },
+                            onFieldFocused = { focusedLineKey = line.key },
                         )
                     }
                     item {
@@ -159,12 +179,14 @@ fun RecipeCardScreen(
     }
 }
 
-/** Centers the requested rectangle in the container instead of just scrolling it minimally into view. */
+/**
+ * Disables Compose's built-in "scroll to reveal the focused field" for the ingredient list -
+ * the manual re-centering effect above (keyed off the viewport's real, settled height) replaces
+ * it entirely, so the two don't fight over the same scroll position.
+ */
 @OptIn(ExperimentalFoundationApi::class)
-private val CenteredBringIntoViewSpec = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
-        return offset - (containerSize - size) / 2f
-    }
+private val NoAutoScrollBringIntoViewSpec = object : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
 }
 
 @Composable
@@ -228,6 +250,7 @@ private fun IngredientRow(
     onSuggestionSelected: (String) -> Unit,
     onAmountChange: (String) -> Unit,
     onRemove: () -> Unit,
+    onFieldFocused: () -> Unit,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -260,7 +283,10 @@ private fun IngredientRow(
                     .fillMaxWidth()
                     .menuAnchor(MenuAnchorType.PrimaryEditable, true)
                     .focusRequester(nameFocusRequester)
-                    .onFocusChanged { onNameFocusChanged(it.isFocused) },
+                    .onFocusChanged {
+                        onNameFocusChanged(it.isFocused)
+                        if (it.isFocused) onFieldFocused()
+                    },
             )
             ExposedDropdownMenu(expanded = expanded, onDismissRequest = {}) {
                 suggestions.forEach { suggestion ->
@@ -296,6 +322,7 @@ private fun IngredientRow(
                 .weight(1f)
                 .onFocusChanged {
                     if (it.isFocused) {
+                        onFieldFocused()
                         amountValue = amountValue.copy(selection = TextRange(0, amountValue.text.length))
                     }
                 },
